@@ -126,4 +126,3 @@ notion-bidirectional-sync
 - `.env` ignored via `.gitignore`
 - Example configuration provided
 
-Developed as a technical integration project demonstrating backend automation and API integration.
