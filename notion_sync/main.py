@@ -35,86 +35,108 @@ conn = psycopg2.connect(
 
 cursor = conn.cursor()
 
-print("Starting Bi-Directional Sync...")
+print("Starting Notion and Database Sync...")
 
 # ===== Fetch from Notion =====
 url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
-response = requests.post(url, headers=headers)
-data = response.json()
 
-for page in data.get("results", []):
-    try:
-        page_id = page["id"]
-        properties = page["properties"]
+has_more = True
+next_cursor = None
 
-        # ===== Extract Fields =====
-        title_list = properties["Task Name"]["title"]
-        task_name = title_list[0]["plain_text"] if title_list else None
+while has_more:
+    payload = {}
+    if next_cursor:
+        payload["start_cursor"] = next_cursor
 
-        status = properties["Status"]["status"]["name"]
+    response = requests.post(url, headers=headers, json=payload, timeout=10)
+    
+    if response.status_code != 200:
+        print("Error fetching from Notion:", response.status_code, response.text)
+        break
+    data = response.json()
 
-        due = properties["Due Date"]["date"]
-        due_date = due["start"] if due else None
+    for page in data.get("results", []):
+        try:
+            page_id = page["id"]
+            properties = page["properties"]
 
-        notion_last_edited_str = page["last_edited_time"]
-        notion_last_edited = datetime.fromisoformat(
-            notion_last_edited_str.replace("Z", "+00:00")
-        ).replace(tzinfo=None)
+            # ===== Extract Fields =====
+            title_list = properties["Task Name"]["title"]
+            task_name = title_list[0]["plain_text"] if title_list else None
 
-        # ===== Check if exists in DB =====
-        cursor.execute(
-            "SELECT task_name, status, due_date, last_edited FROM tasks WHERE id = %s",
-            (page_id,)
-        )
-        result = cursor.fetchone()
+            status = properties["Status"]["status"]["name"]
 
-        if result:
-            db_task_name, db_status, db_due_date, db_last_edited = result
+            due = properties["Due Date"]["date"]
+            due_date = due["start"] if due else None
 
-            # ===== Compare timestamps =====
-            if db_last_edited and db_last_edited > notion_last_edited:
-                print(f"Updating Notion from DB: {db_task_name}")
+            notion_last_edited_str = page["last_edited_time"]
+            notion_last_edited = datetime.fromisoformat(
+                notion_last_edited_str.replace("Z", "+00:00")
+            ).replace(tzinfo=None)
 
-                update_url = f"https://api.notion.com/v1/pages/{page_id}"
+            # ===== Check if exists in DB =====
+            cursor.execute(
+                "SELECT task_name, status, due_date, last_edited FROM tasks WHERE id = %s",
+                (page_id,)
+            )
+            result = cursor.fetchone()
 
-                update_payload = {
-                    "properties": {
-                        "Task Name": {
-                            "title": [
-                                {
-                                    "text": {
-                                        "content": db_task_name
+            if result:
+                db_task_name, db_status, db_due_date, db_last_edited = result
+
+                if db_last_edited and db_last_edited > notion_last_edited:
+                    print(f"Updating Notion from DB: {db_task_name}")
+
+                    update_url = f"https://api.notion.com/v1/pages/{page_id}"
+
+                    update_payload = {
+                        "properties": {
+                            "Task Name": {
+                                "title": [
+                                    {
+                                        "text": {
+                                            "content": db_task_name
+                                        }
                                     }
+                                ]
+                            },
+                            "Status": {
+                                "status": {
+                                    "name": db_status
                                 }
-                            ]
-                        },
-                        "Status": {
-                            "status": {
-                                "name": db_status
                             }
                         }
                     }
-                }
 
-                requests.patch(update_url, headers=headers, json=update_payload)
-                continue
+                    update_response = requests.patch(
+                        update_url,
+                        headers=headers,
+                        json=update_payload,
+                        timeout=10
+                    )
+                    if update_response.status_code != 200:
+                        print("Error updating Notion:", update_response.status_code, update_response.text)
+                    continue
 
-        # ===== Notion newer OR not exist in DB → Update DB =====
-        cursor.execute("""
-            INSERT INTO tasks (id, task_name, status, due_date, last_edited)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (id)
-            DO UPDATE SET
-                task_name = EXCLUDED.task_name,
-                status = EXCLUDED.status,
-                due_date = EXCLUDED.due_date,
-                last_edited = EXCLUDED.last_edited;
-        """, (page_id, task_name, status, due_date, notion_last_edited))
+            # ===== Insert / Update DB =====
+            cursor.execute("""
+                INSERT INTO tasks (id, task_name, status, due_date, last_edited)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (id)
+                DO UPDATE SET
+                    task_name = EXCLUDED.task_name,
+                    status = EXCLUDED.status,
+                    due_date = EXCLUDED.due_date,
+                    last_edited = EXCLUDED.last_edited;
+            """, (page_id, task_name, status, due_date, notion_last_edited))
 
-        print(f"Synced to DB: {task_name}")
+            print(f"Synced to DB: {task_name}")
 
-    except Exception as e:
-        print("Error processing page:", e)
+        except Exception as e:
+            print("Error processing page:", e)
+
+    has_more = data.get("has_more", False)
+    next_cursor = data.get("next_cursor")
 
 conn.commit()
 cursor.close()

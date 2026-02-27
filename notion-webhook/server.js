@@ -30,41 +30,56 @@ const pool = new Pool({
 });
 
 app.post("/webhook", async (req, res) => {
+  try {
+    const event = req.body;
 
-  const event = req.body;
+    console.log("Webhook received:", event.type);
 
-  if (
-    event.type === "page.properties_updated" ||
-    event.type === "page.created"
-  ) {
+    if (
+      event.type === "page.properties_updated" ||
+      event.type === "page.created"
+    ) {
 
-    const pageId = event.entity.id;
+      const pageId = event.entity?.id;
 
-    const page = await notion.pages.retrieve({
-      page_id: pageId
-    });
+      if (!pageId) {
+        console.log("No pageId found in event");
+        return res.status(200).send("Ignored");
+      }
 
-    const taskName = page.properties["Task Name"].title[0]?.plain_text || null;
-    const status = page.properties.Status.status?.name || null;
-    const dueDate = page.properties["Due Date"].date?.start || null;
+      const page = await notion.pages.retrieve({
+        page_id: pageId
+      });
 
-    await pool.query(`
-      INSERT INTO tasks (id, task_name, status, due_date, updated_from)
-      VALUES ($1, $2, $3, $4, 'notion')
-      ON CONFLICT (id)
-      DO UPDATE SET
-        task_name = EXCLUDED.task_name,
-        status = EXCLUDED.status,
-        due_date = EXCLUDED.due_date,
-        updated_from = 'notion'
-    `, [pageId, taskName, status, dueDate]);
+      const taskName =
+        page.properties["Task Name"]?.title[0]?.plain_text || null;
 
-    console.log(
-      `Updated Database from Notion | Page: ${pageId} | Status -> ${status}| Due -> ${dueDate}`
-    );
+      const status =
+        page.properties.Status?.status?.name || null;
+
+      const dueDate =
+        page.properties["Due Date"]?.date?.start || null;
+
+      await pool.query(`
+        INSERT INTO tasks (id, task_name, status, due_date, updated_from)
+        VALUES ($1, $2, $3, $4, 'notion')
+        ON CONFLICT (id)
+        DO UPDATE SET
+          task_name = EXCLUDED.task_name,
+          status = EXCLUDED.status,
+          due_date = EXCLUDED.due_date,
+          updated_from = 'notion'
+      `, [pageId, taskName, status, dueDate]);
+
+      console.log(`Updated Database from Notion | Page: ${pageId} | Status -> ${status}| Due -> ${dueDate}`);
+    }
+
+    res.status(200).send("OK");
+
+  } catch (error) {
+    console.error("Webhook error:", error);
+    res.status(200).send("Error handled"); 
   }
-
-  res.status(200).send("OK");
 });
 setInterval(async () => {
 
