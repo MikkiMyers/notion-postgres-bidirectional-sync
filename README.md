@@ -123,13 +123,7 @@ notion-bidirectional-sync
 ---
 
 ## 🔒 Security
-
-- No secrets committed
 - `.env` ignored via `.gitignore`
 - Example configuration provided
-
----
-
-## 👨‍💻 Author
 
 Developed as a technical integration project demonstrating backend automation and API integration.
